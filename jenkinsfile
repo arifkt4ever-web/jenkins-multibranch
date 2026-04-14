@@ -90,7 +90,7 @@ pipeline {
             }
             steps {
                 sh """
-                terraform destroy -auto-approve tfplan
+                terraform apply -auto-approve tfplan
                 """
             }
         }
