@@ -1,0 +1,116 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+    }
+
+    environment {
+        AWS_REGION = "ap-south-1"
+    }
+
+    stages {
+
+        // Ignore unwanted branches like main
+        stage('Check Branch') {
+            when {
+                not {
+                    anyOf {
+                        branch 'dev'
+                        branch 'qa'
+                        branch 'prod'
+                    }
+                }
+            }
+            steps {
+                echo "Skipping branch: ${env.BRANCH_NAME}"
+                script {
+                    currentBuild.result = 'NOT_BUILT'
+                    error("Stopping pipeline for non-target branch")
+                }
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                echo "Using branch: ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir('terra-workspace') {
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        stage('Select Workspace') {
+            steps {
+                dir('terra-workspace') {
+                    script {
+                        def ws = env.BRANCH_NAME
+                        sh """
+                        terraform workspace list | grep ${ws} || terraform workspace new ${ws}
+                        terraform workspace select ${ws}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir('terra-workspace') {
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        stage('Terraform Destroy Plan') {
+            steps {
+                dir('terra-workspace') {
+                    sh """
+                    terraform plan -destroy -var-file=${env.BRANCH_NAME}.tfvars -out=tfplan-destroy
+                    """
+                }
+            }
+        }
+
+        // Approval before PROD destroy
+        stage('Approval for PROD Destroy') {
+            when {
+                branch 'prod'
+            }
+            steps {
+                input message: "Approve Production Destroy?"
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                anyOf {
+                    branch 'dev'
+                    branch 'qa'
+                    branch 'prod'
+                }
+            }
+            steps {
+                dir('terra-workspace') {
+                    sh """
+                    terraform apply -auto-approve tfplan-destroy
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Destroy successful"
+        }
+        failure {
+            echo "Pipeline failed"
+        }
+    }
+}
