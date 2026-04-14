@@ -1,0 +1,107 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+    }
+
+    environment {
+        AWS_REGION = "ap-south-1"
+    }
+
+    stages {
+
+        //  Ignore unwanted branches like main
+        stage('Check Branch') {
+            when {
+                not {
+                    anyOf {
+                        branch 'dev'
+                        branch 'qa'
+                        branch 'prod'
+                    }
+                }
+            }
+            steps {
+                echo "Skipping branch: ${env.BRANCH_NAME}"
+                script {
+                    currentBuild.result = 'NOT_BUILT'
+                    error("Stopping pipeline for non-target branch")
+                }
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                echo "Using branch: ${env.BRANCH_NAME}"
+            }
+        }
+
+        //  Run from ROOT (IMPORTANT FIX)
+        stage('Terraform Init') {
+            steps {
+                sh 'terraform init'
+            }
+        }
+
+        stage('Select Workspace') {
+            steps {
+                script {
+                    def ws = env.BRANCH_NAME
+                    sh """
+                    terraform workspace list | grep ${ws} || terraform workspace new ${ws}
+                    terraform workspace select ${ws}
+                    """
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                sh 'terraform validate'
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                sh """
+                terraform plan -var-file=${env.BRANCH_NAME}.tfvars -out=tfplan
+                """
+            }
+        }
+
+        //  Approval before PROD
+        stage('Approval for PROD') {
+            when {
+                branch 'prod'
+            }
+            steps {
+                input message: "Approve Production Deployment?"
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                anyOf {
+                    branch 'dev'
+                    branch 'qa'
+                    branch 'prod'
+                }
+            }
+            steps {
+                sh """
+                terraform apply -auto-approve tfplan
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo " Deployment successful"
+        }
+        failure {
+            echo " Pipeline failed"
+        }
+    }
+}
